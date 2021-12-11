@@ -3,73 +3,7 @@ const Allocator = std.mem.Allocator;
 const macho = std.macho;
 const disassemble = @import("arm/disassembler.zig").disassemble;
 const VirtualMemory = @import("memory.zig").VirtualMemory;
-
-const ClassInfo = struct {
-    name: [*:0]const u8,
-    superclass: ?[*:0]const u8,
-    superclassId: ?u64,
-    class_t: u64,
-    class_ro_t: u64,
-    methods: []const Method,
-
-    pub fn getMethod(self: *const ClassInfo, name: []const u8) ?Method {
-        for (self.methods) |method| {
-            const methodName = std.mem.spanZ(method.name);
-            if (std.mem.eql(u8, methodName, name)) return method;
-        }
-        return null;
-    }
-};
-
-const Method = struct {
-    name: [*:0]const u8,
-    types: [*:0]const u8,
-    imp: u64
-};
-
-pub fn readClassInfo(allocator: *Allocator, vm: *VirtualMemory, addr: u64) !ClassInfo {
-    // The address of the class_rw_t
-    const classRoAddr = try vm.readIntLittle(addr + 32, u64);
-    const nameAddr = try vm.readIntLittle(classRoAddr + 24, u64);
-
-    const superclassAddr = try vm.readIntLittle(addr + 8, u64);
-    const superclassRoAddr = try vm.readIntLittle(superclassAddr + 32, u64);
-    const superNameAddr = try vm.readIntLittle(superclassRoAddr + 24, u64);
-
-    const methodListAddr = try vm.readIntLittle(classRoAddr + 32, u64);
-    const entsize = try vm.readIntLittle(methodListAddr + 0, u32);
-    const count = try vm.readIntLittle(methodListAddr + 4, u32);
-    // std.log.info("{d} x {d}b base methods", .{ count, entsize });
-
-    var methods = std.ArrayList(Method).init(allocator);
-    var i: usize = 0;
-    while (i < count) : (i += 1) {
-        const methodAddr = methodListAddr + 8 + i * entsize;
-        const methodSelAddr = try vm.readIntLittle(methodAddr, u64);
-        const methodSel = @ptrCast([*:0]const u8, try vm.getPtr(methodSelAddr));
-
-        const methodTypesAddr = try vm.readIntLittle(methodAddr + 8, u64);
-        const methodTypes = @ptrCast([*:0]const u8, try vm.getPtr(methodTypesAddr));
-
-        const imp = try vm.readIntLittle(methodAddr + 16, u64);
-        const method = Method {
-            .name = methodSel,
-            .types = methodTypes,
-            .imp = imp
-        };
-        try methods.append(method);
-    }
-
-    return ClassInfo {
-        .name = @ptrCast([*:0]const u8, try vm.getPtr(nameAddr)),
-        .superclass = if (superclassAddr == 0x0) null else
-            @ptrCast([*:0]const u8, try vm.getPtr(superNameAddr)),
-        .superclassId = if (superclassAddr == 0x0) null else superclassAddr,
-        .class_t = addr,
-        .class_ro_t = classRoAddr,
-        .methods = methods.toOwnedSlice()
-    };
-}
+const objc = @import("objc.zig");
 
 /// Integer parse function for use by the CLI. Instead of throwing an error
 /// it will send an error message and return null.
@@ -307,22 +241,33 @@ fn commandClass(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !v
 
     // The address of the class_t
     const classAddr = try vm.readIntLittle(listAddr, u64);
-    const classInfo = try readClassInfo(allocator, vm, classAddr);
+    const classInfo = try objc.readClassInfo(allocator, vm, classAddr);
     std.debug.print("// class_t: 0x{x}\n", .{classInfo.class_t});
     std.debug.print("// class_ro_t: 0x{x}\n\n", .{classInfo.class_ro_t});
     const superclass = classInfo.superclass orelse @as([:0]const u8, "NSObject").ptr ;
-    std.debug.print("@interface {s} : {s} ({d}) {{\n", .{ classInfo.name, superclass, classInfo.superclassId });
+    std.debug.print("@interface {s} : {s} (0x{x}) {{\n", .{ classInfo.name, superclass, classInfo.superclassId });
+    for (classInfo.variables) |variable| {
+        const varType = try objc.decodeTypeName(allocator, std.mem.spanZ(variable.varType));
+        defer allocator.free(varType);
+        std.debug.print("    {s} {s};\n", .{ varType, variable.name });
+    }
     std.debug.print("}}\n", .{});
-    //std.debug.print("    Methods:\n", .{});
 
     for (classInfo.methods) |method| {
-        const setterName = try std.mem.concat(allocator, u8, &.{ "set", std.mem.spanZ(method.name), ":" });
-        defer allocator.free(setterName);
-        setterName[3] = std.ascii.toUpper(setterName[3]);
-        if (classInfo.getMethod(setterName)) |setter| {
-            std.debug.print("// Getter: 0x{x}\n", .{ method.imp });
-            std.debug.print("// Setter: 0x{x}\n", .{ setter.imp });
-            std.debug.print("@property(nonatomic, readwrite) {s} {s};\n\n", .{ method.types, method.name });
+        if (classInfo.getVar(std.mem.spanZ(method.name)) != null) {
+            const setterName = try std.mem.concat(allocator, u8, &.{ "set", std.mem.spanZ(method.name), ":" });
+            defer allocator.free(setterName);
+            setterName[3] = std.ascii.toUpper(setterName[3]);
+            // It is important to know that the exact @property flags are unknown and depend on implementation
+            // TODO: maybe detect them?
+            if (classInfo.getMethod(setterName)) |setter| {
+                std.debug.print("// Getter: 0x{x}\n", .{ method.imp });
+                std.debug.print("// Setter: 0x{x}\n", .{ setter.imp });
+                std.debug.print("@property(readwrite) {s} {s};\n\n", .{ method.types, method.name });
+            } else {
+                std.debug.print("// Getter: 0x{x}\n", .{ method.imp });
+                std.debug.print("@property(readonly) {s} {s};\n\n", .{ method.types, method.name });
+            }
         } else if (!std.mem.startsWith(u8, std.mem.spanZ(method.name), "set")) {
             std.debug.print("// Implementation: 0x{x}\n", .{method.imp});
             std.debug.print("- (TODO){s} {s}\n\n", .{ method.name, method.types });
