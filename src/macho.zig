@@ -21,15 +21,15 @@ pub fn loadExecutable(allocator: *Allocator, file: std.fs.File) !VirtualMemory {
 
     const header = try reader.readStruct(macho.mach_header_64);
     if (header.magic != macho.MH_MAGIC_64) {
-        std.log.err("Not valid 64-bit Mach-O file", .{});
-        return error.FileError;
-    }
-    if (header.cputype != macho.CPU_TYPE_ARM64) {
-        std.log.err("Mach-O file doesn't contains ARM64 machine code", .{});
+        std.log.err("Not a valid 64-bit Mach-O file", .{});
         return error.FileError;
     }
     if (header.filetype != macho.MH_EXECUTE) {
         std.log.err("Mach-O file is not an executable", .{});
+        return error.FileError;
+    }
+    if (header.cputype != macho.CPU_TYPE_ARM64) {
+        std.log.err("Only ARM64 machine code is supported", .{});
         return error.FileError;
     }
 
