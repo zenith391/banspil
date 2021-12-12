@@ -87,6 +87,8 @@ pub fn main() !void {
             try commandMon(allocator, &vm, args);
         } else if (std.mem.eql(u8, command, "code")) {
             try commandCode(allocator, &vm, args);
+        } else if (std.mem.eql(u8, command, "objc")) {
+            try commandObjC(allocator, &vm, args);
         } else if (std.mem.eql(u8, command, "class")) {
             try commandClass(allocator, &vm, args);
         } else if (std.mem.eql(u8, command, "class-list")) {
@@ -222,6 +224,43 @@ fn commandCode(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !vo
 
         addr += slice.len;
         if (!wholeFunction) remaining -= slice.len;
+    }
+}
+
+fn commandObjC(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !void {
+    _ = allocator;
+    const className = expectArg(args, 0, "Expected class name") orelse return;
+    const methodName = expectArg(args, 1, "Expected method name") orelse return;
+
+    const class = (try objc.ClassInfo.getClassByName(allocator, vm, className)) orelse {
+        std.log.err("There is no class named '{s}'", .{ className });
+        std.log.info("You can see what classes the current file contains using the 'class-list' command", .{});
+        return;
+    };
+
+    const method = class.getMethod(methodName);
+    std.log.info("Decompilation of code at {x}:", .{ method.imp });
+
+    const start = method.imp;
+    var addr: u64 = start;
+    while (true) {
+        var data: [4]u8 = undefined;
+        const slice = &data;
+        try vm.readSlice(addr, slice);
+        std.debug.print("{x}: ", .{addr});
+        for (slice) |byte| std.debug.print("{x:0>2} ", .{byte});
+        const opcode = try vm.readIntLittle(addr, u32);
+        std.debug.print("{b:0>32} ", .{opcode});
+        switch (disassemble(addr, opcode)) {
+            .@"RET ", .@"B " => {
+                std.debug.print("\n", .{});
+                break;
+            },
+            else => {}
+        }
+        std.debug.print("\n", .{});
+
+        addr += slice.len;
     }
 }
 

@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = *std.mem.Allocator;
 const VirtualMemory = @import("memory.zig").VirtualMemory;
+const encoding = @import("arm/encoding.zig");
 
 pub const ClassInfo = struct {
     name: [*:0]const u8,
@@ -28,6 +29,27 @@ pub const ClassInfo = struct {
         }
         return null;
     }
+
+    pub fn getClassByName(allocator: Allocator, vm: *const VirtualMemory, name: []const u8) !?ClassInfo {
+        const classListSection = vm.getSection("__objc_classlist") orelse {
+            std.log.err("Cannot read Objective-C classes from executable. Missing section '__objc_classlist'", .{});
+            return null;
+        };
+        var listAddr = classListSection.start;
+        var i: usize = 0;
+
+        while (listAddr < classListSection.start + classListSection.size) : (listAddr += 8) {
+            const classAddr = try vm.readIntLittle(listAddr, u64);
+            const classRoAddr = try vm.readIntLittle(classAddr + 32, u64);
+            const nameAddr = try vm.readIntLittle(classRoAddr + 24, u64);
+            const className = std.mem.spanZ(@ptrCast([*:0]const u8, try vm.getPtr(nameAddr)));
+            if (std.mem.eql(u8, className, name)) {
+                return try readClassInfo(allocator, vm, classAddr);
+            }
+            i += 1;
+        }
+        return null;
+    }
 };
 
 pub const Method = struct {
@@ -42,7 +64,7 @@ pub const Var = struct {
 };
 
 // Everything was made using https://opensource.apple.com/source/objc4/objc4-532/runtime/objc-runtime-new.h.auto.html
-pub fn readClassInfo(allocator: Allocator, vm: *VirtualMemory, addr: u64) !ClassInfo {
+pub fn readClassInfo(allocator: Allocator, vm: *const VirtualMemory, addr: u64) !ClassInfo {
     // The address of the class_rw_t
     const classRoAddr = try vm.readIntLittle(addr + 32, u64);
     const nameAddr = try vm.readIntLittle(classRoAddr + 24, u64);
@@ -152,4 +174,14 @@ pub fn decodeTypeName(allocator: Allocator, typeName: []const u8) DecodeTypeName
     }
 
     return string.toOwnedSlice();
+}
+
+pub fn decompile(opcodes: []const u32) void {
+    const stdout = std.io.getStdOut().writer();
+
+    for (opcodes) |opcode| {
+        const instructionTag = encoding.decode(opcode);
+        _ = instructionTag;
+        _ = stdout;
+    }
 }
