@@ -256,6 +256,9 @@ fn commandObjC(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !vo
 
     const start = method.imp;
     var addr: u64 = start;
+
+    var opcodes = std.ArrayList(u32).init(allocator);
+    defer opcodes.deinit();
     while (true) {
         var data: [4]u8 = undefined;
         const slice = &data;
@@ -264,6 +267,7 @@ fn commandObjC(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !vo
         for (slice) |byte| std.debug.print("{x:0>2} ", .{byte});
         const opcode = try vm.readIntLittle(addr, u32);
         std.debug.print("{b:0>32} ", .{opcode});
+        try opcodes.append(opcode);
         switch (disassemble(addr, opcode)) {
             .@"RET ", .@"B " => {
                 std.debug.print("\n", .{});
@@ -275,6 +279,8 @@ fn commandObjC(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !vo
 
         addr += slice.len;
     }
+
+    try objc.decompile(allocator, addr, vm, opcodes.items);
 }
 
 fn commandClass(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !void {

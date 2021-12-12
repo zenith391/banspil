@@ -2,6 +2,7 @@ const std = @import("std");
 const Allocator = *std.mem.Allocator;
 const VirtualMemory = @import("memory.zig").VirtualMemory;
 const encoding = @import("arm/encoding.zig");
+const disassembler = @import("arm/disassembler.zig");
 
 pub const ClassInfo = struct {
     name: [*:0]const u8,
@@ -176,11 +177,122 @@ pub fn decodeTypeName(allocator: Allocator, typeName: []const u8) DecodeTypeName
     return string.toOwnedSlice();
 }
 
-pub fn decompile(opcodes: []const u32) void {
-    const stdout = std.io.getStdOut().writer();
+const RegisterContent = union(enum) {
+    Undefined: void,
+    Argument: u5,
+    Value: u64,
+    /// The value stored in at memory address in payload
+    ValueAt: *RegisterContent,
+    Addition: struct { lhs: *RegisterContent, rhs: *RegisterContent },
 
-    for (opcodes) |opcode| {
+    pub fn add(allocator: Allocator, a: RegisterContent, b: RegisterContent) !RegisterContent {
+        const lhs = try allocator.create(RegisterContent);
+        lhs.* = a;
+        const rhs = try allocator.create(RegisterContent);
+        rhs.* = b;
+
+        return (RegisterContent { .Addition = .{ .lhs = lhs, .rhs = rhs } }).simplify(null);
+    }
+
+    pub fn deref(self: RegisterContent, allocator: Allocator, vm: *const VirtualMemory) !RegisterContent {
+        const at = try allocator.create(RegisterContent);
+        at.* = self;
+        return (RegisterContent { .ValueAt = at }).simplify(vm);
+    }
+
+    pub fn simplify(self: RegisterContent, vm: ?*const VirtualMemory) RegisterContent {
+        switch (self) {
+            .Addition => |add| {
+                if (add.lhs.* == .Value and add.rhs.* == .Value) {
+                    return RegisterContent { .Value = add.lhs.*.Value + add.rhs.*.Value };
+                }
+            },
+            .ValueAt => |at| {
+                switch (at.*) {
+                    .Value => |value| {
+                        if (vm != null) {
+                            const isReadOnly = true;
+                            if (isReadOnly) {
+                                const byte = vm.?.readByte(value) catch return self;
+                                return RegisterContent { .Value = byte };
+                            }
+                        }
+                    },
+                    else => {}
+                }
+            },
+            else => {} // TODO
+        }
+        return self;
+    }
+
+    pub fn format(value: RegisterContent, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void {
+        _ = fmt;
+        switch (value) {
+            .Undefined => try writer.writeAll("undef"),
+            .Argument => |arg| try writer.print("arg{d}", .{ arg }),
+            .Value => |val| try writer.print("{d}", .{ val }),
+            .ValueAt => |at| {
+                try writer.writeAll("[");
+                try RegisterContent.format(at.*, "", options, writer);
+                try writer.writeAll("]");
+            },
+            .Addition => |add| {
+                try RegisterContent.format(add.lhs.*, "", options, writer);
+                try writer.writeAll(" + ");
+                try RegisterContent.format(add.rhs.*, "", options, writer);
+            }
+        }
+    }
+};
+
+pub fn decompile(child_allocator: Allocator, start: u64, vm: *const VirtualMemory, opcodes: []const u32) !void {
+    var arena = std.heap.ArenaAllocator.init(child_allocator);
+    const allocator = &arena.allocator;
+
+    const stdout = std.io.getStdOut().writer();
+    var registers: [32]RegisterContent = [1]RegisterContent { .Undefined } ** 32;
+    {
+        var i: usize = 0;
+        while (i < 7) : (i += 1) {
+            registers[i] = .{ .Argument = @intCast(u5, i) };
+        }
+    }
+
+    for (opcodes) |opcode, i| {
+        const addr = start + i * 4;
+
         const instructionTag = encoding.decode(opcode);
+        switch (instructionTag) {
+            .@"ADRP " => {
+                const Rd = disassembler.getField(instructionTag, opcode, 0);
+                const target = disassembler.getAdrpTarget(addr, opcode);
+                registers[Rd] = .{ .Value = target };
+                // std.debug.print("x{d} <- 0x{x}\n", .{ Rd, target });
+            },
+            .@"LDRSW imm" => {
+                const Rn = disassembler.getField(instructionTag, opcode, 0);
+                const Rt = disassembler.getField(instructionTag, opcode, 1);
+                const imm = disassembler.getField(instructionTag, opcode, 2) << 2;
+
+                const sourceAddr = try RegisterContent.add(allocator, registers[Rn], .{ .Value = imm });
+                registers[Rt] = try sourceAddr.deref(allocator, vm);
+                std.debug.print("x{d} <- {}\n", .{ Rt, registers[Rt] });
+            },
+            .@"LDR Xoff" => {
+                const Rt = disassembler.getField(instructionTag, opcode, 0);
+                const Rm = disassembler.getField(instructionTag, opcode, 1);
+                const Rn = disassembler.getField(instructionTag, opcode, 2);
+
+                registers[Rt] = try RegisterContent.deref(
+                    try RegisterContent.add(allocator, registers[Rm], registers[Rn]), allocator, vm);
+                std.debug.print("x{d} <- {}\n", .{ Rt, registers[Rt] });
+            },
+            .@"RET " => {
+                std.debug.print("return x0\n", .{ });
+            },
+            else => {} // not implemented
+        }
         _ = instructionTag;
         _ = stdout;
     }
