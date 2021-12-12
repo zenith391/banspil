@@ -152,13 +152,22 @@ fn commandClassList(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs
     var listAddr = classListSection.start;
     var i: usize = 0;
 
+    var lineLength: usize = 0;
+
     while (listAddr < classListSection.start + classListSection.size) : (listAddr += 8) {
         const classAddr = try vm.readIntLittle(listAddr, u64);
         const classRoAddr = try vm.readIntLittle(classAddr + 32, u64);
         const nameAddr = try vm.readIntLittle(classRoAddr + 24, u64);
-        std.debug.print("class #{d}: {s}\n", .{i, @ptrCast([*:0]const u8, try vm.getPtr(nameAddr))});
+        const name = std.mem.spanZ(@ptrCast([*:0]const u8, try vm.getPtr(nameAddr)));
+        if (lineLength + name.len + 2 > 80) {
+            lineLength = 0;
+            std.debug.print("\n", .{});
+        }
+        std.debug.print("{s}, ", .{ name });
+        lineLength += name.len + 2;
         i += 1;
     }
+    std.debug.print("\n", .{});
 }
 
 fn commandMon(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !void {
@@ -238,8 +247,12 @@ fn commandObjC(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !vo
         return;
     };
 
-    const method = class.getMethod(methodName);
-    std.log.info("Decompilation of code at {x}:", .{ method.imp });
+    const method = class.getMethod(methodName) orelse {
+        std.log.err("Class '{s}' has no method named '{s}'", .{ className, methodName });
+        std.log.info("You can see what methods this class has using the 'class {s}' command", .{ className });
+        return;
+    };
+    std.log.info("Decompilation of code at 0x{x}:", .{ method.imp });
 
     const start = method.imp;
     var addr: u64 = start;
@@ -267,20 +280,13 @@ fn commandObjC(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !vo
 fn commandClass(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !void {
     _ = allocator;
     // See https://opensource.apple.com/source/objc4/objc4-532/runtime/objc-runtime-new.h.auto.html
-    const id = parseIntSafe(u64, expectArg(
-        args, 0, "Expected class numerical identifier") orelse return, 10) orelse return;
-
-    const classListSection = vm.getSection("__objc_classlist") orelse {
-        std.log.err("Cannot read Objective-C classes from executable. Missing section '__objc_classlist'", .{});
+    const className = expectArg(args, 0, "Expected class name") orelse return;
+    const classInfo = (try objc.ClassInfo.getClassByName(allocator, vm, className)) orelse {
+        std.log.err("There is no class named '{s}'", .{ className });
+        std.log.info("You can see what classes the current file contains using the 'class-list' command", .{});
         return;
     };
 
-    // The address of the class pointer in the class list
-    const listAddr = classListSection.start + id * 8;
-
-    // The address of the class_t
-    const classAddr = try vm.readIntLittle(listAddr, u64);
-    const classInfo = try objc.readClassInfo(allocator, vm, classAddr);
     std.debug.print("// class_t: 0x{x}\n", .{classInfo.class_t});
     std.debug.print("// class_ro_t: 0x{x}\n\n", .{classInfo.class_ro_t});
     const superclass = classInfo.superclass orelse @as([:0]const u8, "NSObject").ptr ;
