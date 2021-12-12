@@ -263,15 +263,15 @@ fn commandClass(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !v
             if (classInfo.getMethod(setterName)) |setter| {
                 std.debug.print("// Getter: 0x{x}\n", .{ method.imp });
                 std.debug.print("// Setter: 0x{x}\n", .{ setter.imp });
-                std.debug.print("@property(readwrite) {s} {s};\n\n", .{ method.types, method.name });
+                std.debug.print("@property(readwrite) {s} {s}; (synthetized)\n\n", .{ method.types, method.name });
             } else {
                 std.debug.print("// Getter: 0x{x}\n", .{ method.imp });
-                std.debug.print("@property(readonly) {s} {s};\n\n", .{ method.types, method.name });
+                std.debug.print("@property(readonly) {s} {s}; (synthetized)\n\n", .{ method.types, method.name });
             }
         } else if (!std.mem.startsWith(u8, std.mem.spanZ(method.name), "set")) {
             std.debug.print("// Implementation: 0x{x}\n", .{method.imp});
             std.debug.print("- (TODO){s} {s}\n\n", .{ method.name, method.types });
         }
     }
-    std.debug.print("\n@end\n", .{});
+    std.debug.print("@end\n", .{});
 }

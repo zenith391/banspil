@@ -142,11 +142,11 @@ pub fn decodeTypeName(allocator: Allocator, typeName: []const u8) DecodeTypeName
                 try writer.print("anyobject", .{});
             }
         },
-        '#' => {}, // TODO: class
-        '[' => {}, // TODO: array
-        '{' => {}, // TODO: structure
-        '(' => {}, // TODO: union
-        'b' => {}, // TODO: bitfield
+        '#' => @panic("TODO: class"),
+        '[' => @panic("TODO: array"),
+        '{' => @panic("TODO: structure"),
+        '(' => @panic("TODO: union"),
+        'b' => @panic("TODO: bitfield"),
         '?' => try writer.writeAll("unknown"),
         else => unreachable
     }
