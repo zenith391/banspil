@@ -231,8 +231,9 @@ const RegisterContent = union(enum) {
         switch (value) {
             .Undefined => try writer.writeAll("undef"),
             .Argument => |arg| try writer.print("arg{d}", .{ arg }),
-            .Value => |val| try writer.print("{d}", .{ val }),
+            .Value => |val| try writer.print("0x{x}", .{ val }),
             .ValueAt => |at| {
+                // TODO: make it correspond to ivar if it is one
                 try writer.writeAll("[");
                 try RegisterContent.format(at.*, "", options, writer);
                 try writer.writeAll("]");
@@ -246,7 +247,7 @@ const RegisterContent = union(enum) {
     }
 };
 
-pub fn decompile(child_allocator: Allocator, start: u64, vm: *const VirtualMemory, opcodes: []const u32) !void {
+pub fn decompile(child_allocator: Allocator, original_start: u64, vm: *const VirtualMemory, org_opcodes: [*]const u32) !void {
     var arena = std.heap.ArenaAllocator.init(child_allocator);
     const allocator = &arena.allocator;
 
@@ -259,8 +260,12 @@ pub fn decompile(child_allocator: Allocator, start: u64, vm: *const VirtualMemor
         }
     }
 
-    for (opcodes) |opcode, i| {
+    var i: usize = 0;
+    var start = original_start;
+    var opcodes = org_opcodes;
+    while (true) : (i += 1) {
         const addr = start + i * 4;
+        const opcode = try vm.readIntLittle(addr, u32);
 
         const instructionTag = encoding.decode(opcode);
         switch (instructionTag) {
@@ -276,6 +281,18 @@ pub fn decompile(child_allocator: Allocator, start: u64, vm: *const VirtualMemor
                 const imm = disassembler.getField(instructionTag, opcode, 2) << 2;
 
                 const sourceAddr = try RegisterContent.add(allocator, registers[Rn], .{ .Value = imm });
+                // TODO: handle data type size
+                registers[Rt] = try sourceAddr.deref(allocator, vm);
+                std.debug.print("x{d} <- {}\n", .{ Rt, registers[Rt] });
+            },
+            .@"LDR Ximm" => {
+                const Rn = disassembler.getField(instructionTag, opcode, 0);
+                const Rt = disassembler.getField(instructionTag, opcode, 1);
+                const size = @truncate(u2, (opcode >> 30));
+                const imm = disassembler.getField(instructionTag, opcode, 2) << size;
+
+                const sourceAddr = try RegisterContent.add(allocator, registers[Rn], .{ .Value = imm });
+                // TODO: handle data type size
                 registers[Rt] = try sourceAddr.deref(allocator, vm);
                 std.debug.print("x{d} <- {}\n", .{ Rt, registers[Rt] });
             },
@@ -286,10 +303,30 @@ pub fn decompile(child_allocator: Allocator, start: u64, vm: *const VirtualMemor
 
                 registers[Rt] = try RegisterContent.deref(
                     try RegisterContent.add(allocator, registers[Rm], registers[Rn]), allocator, vm);
+
                 std.debug.print("x{d} <- {}\n", .{ Rt, registers[Rt] });
+            },
+            .@"B " => {
+                const imm = @intCast(u28, disassembler.getField(instructionTag, opcode, 0) << 2);
+                const target = @bitCast(u64, @intCast(i64, addr) + @bitCast(i28, imm));
+                std.debug.print("goto 0x{x}\n", .{ target });
+
+                opcodes = @ptrCast([*]const u32, @alignCast(@alignOf(u32), try vm.getPtr(target)));
+                start = target - 4;
+                i = 0;
+            },
+            .@"BR " => {
+                const Rn = disassembler.getField(instructionTag, opcode, 0);
+                std.debug.print("goto {}\n", .{ registers[Rn] });
+                break;
             },
             .@"RET " => {
                 std.debug.print("return x0\n", .{ });
+                break;
+            },
+            .@"BAD " => {
+                std.debug.print("Incorrect instruction at 0x{x}\n", .{ addr });
+                break;
             },
             else => {} // not implemented
         }

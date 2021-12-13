@@ -221,7 +221,7 @@ fn commandCode(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !vo
         const opcode = try vm.readIntLittle(addr, u32);
         std.debug.print("{b:0>32} ", .{opcode});
         switch (disassemble(addr, opcode)) {
-            .@"RET ", .@"B " => {
+            .@"RET ", .@"B ", .@"BR " => {
                 if (wholeFunction) {
                     std.debug.print("\n", .{});
                     break;
@@ -269,7 +269,7 @@ fn commandObjC(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !vo
         std.debug.print("{b:0>32} ", .{opcode});
         try opcodes.append(opcode);
         switch (disassemble(addr, opcode)) {
-            .@"RET ", .@"B " => {
+            .@"RET ", .@"B ", .@"BR " => {
                 std.debug.print("\n", .{});
                 break;
             },
@@ -280,7 +280,7 @@ fn commandObjC(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !vo
         addr += slice.len;
     }
 
-    try objc.decompile(allocator, addr, vm, opcodes.items);
+    try objc.decompile(allocator, start, vm, opcodes.items.ptr);
 }
 
 fn commandClass(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !void {

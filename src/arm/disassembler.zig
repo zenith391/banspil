@@ -31,6 +31,9 @@ pub fn disassemble(addr: u64, opcode: u32) encoding.Instruction {
         const Rd = getField(instructionTag, opcode, 0);
         const result = getAdrpTarget(addr, opcode);
         stdout.print(" x{d}, 0x{x}", .{ Rd, result }) catch {};
+    } else if (instructionTag == .@"B ") {
+        const imm = @intCast(u28, getField(instructionTag, opcode, 0) << 2);
+        stdout.print(" 0x{x}", .{ @bitCast(u64, @intCast(i64, addr) + @bitCast(i28, imm)) }) catch {};
     } else {
         for (instruction.fields) |field| {
             const value = (opcode >> field.shift) & field.mask;
