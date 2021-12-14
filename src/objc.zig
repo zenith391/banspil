@@ -162,7 +162,7 @@ pub fn decodeTypeName(allocator: Allocator, typeName: []const u8) DecodeTypeName
                 const endQuote = std.mem.indexOfScalarPos(u8, typeName, startQuote + 1, '"').?;
                 try writer.print("{s}", .{ typeName[startQuote+1..endQuote] });
             } else {
-                try writer.print("anyobject", .{});
+                try writer.print("id", .{});
             }
         },
         '#' => @panic("TODO: class"),
@@ -180,10 +180,16 @@ pub fn decodeTypeName(allocator: Allocator, typeName: []const u8) DecodeTypeName
 const RegisterContent = union(enum) {
     Undefined: void,
     Argument: u5,
+    Register: u5,
     Value: u64,
     /// The value stored in at memory address in payload
-    ValueAt: *RegisterContent,
+    ValueAt: struct {
+        ptr: *RegisterContent,
+        /// Load size in bytes
+        size: u4
+    },
     Addition: struct { lhs: *RegisterContent, rhs: *RegisterContent },
+    Or: struct { lhs: *RegisterContent, rhs: *RegisterContent },
 
     pub fn add(allocator: Allocator, a: RegisterContent, b: RegisterContent) !RegisterContent {
         const lhs = try allocator.create(RegisterContent);
@@ -194,27 +200,47 @@ const RegisterContent = union(enum) {
         return (RegisterContent { .Addition = .{ .lhs = lhs, .rhs = rhs } }).simplify(null);
     }
 
-    pub fn deref(self: RegisterContent, allocator: Allocator, vm: *const VirtualMemory) !RegisterContent {
+    pub fn binaryOr(allocator: Allocator, a: RegisterContent, b: RegisterContent) !RegisterContent {
+        const lhs = try allocator.create(RegisterContent);
+        lhs.* = a;
+        const rhs = try allocator.create(RegisterContent);
+        rhs.* = b;
+
+        return (RegisterContent { .Or = .{ .lhs = lhs, .rhs = rhs } }).simplify(null);
+    }
+
+    pub fn deref(self: RegisterContent, allocator: Allocator, vm: *const VirtualMemory, size: u4) !RegisterContent {
         const at = try allocator.create(RegisterContent);
         at.* = self;
-        return (RegisterContent { .ValueAt = at }).simplify(vm);
+        return (RegisterContent { .ValueAt = .{ .ptr = at, .size = size }}).simplify(vm);
     }
 
     pub fn simplify(self: RegisterContent, vm: ?*const VirtualMemory) RegisterContent {
         switch (self) {
             .Addition => |add| {
+                add.lhs.* = add.lhs.simplify(vm);
+                add.rhs.* = add.rhs.simplify(vm);
                 if (add.lhs.* == .Value and add.rhs.* == .Value) {
                     return RegisterContent { .Value = add.lhs.*.Value + add.rhs.*.Value };
                 }
             },
+            .Or => |bor| {
+                _ = bor;
+                // TODO: simplify
+            },
             .ValueAt => |at| {
-                switch (at.*) {
+                switch (at.ptr.*) {
                     .Value => |value| {
                         if (vm != null) {
                             const isReadOnly = true;
                             if (isReadOnly) {
-                                const byte = vm.?.readByte(value) catch return self;
-                                return RegisterContent { .Value = byte };
+                                var val: u64 = 0;
+                                var bytes: u6 = 0;
+                                while (bytes < at.size) : (bytes += 1) {
+                                    const byte = vm.?.readByte(value + bytes) catch return self;
+                                    val = val | (@as(u64, byte) << bytes * 8);
+                                }
+                                return RegisterContent { .Value = val };
                             }
                         }
                     },
@@ -231,17 +257,24 @@ const RegisterContent = union(enum) {
         switch (value) {
             .Undefined => try writer.writeAll("undef"),
             .Argument => |arg| try writer.print("arg{d}", .{ arg }),
+            .Register => |reg| try writer.print("x{d}", .{ reg }), // TODO: make it more evident that it's the original value
             .Value => |val| try writer.print("0x{x}", .{ val }),
             .ValueAt => |at| {
                 // TODO: make it correspond to ivar if it is one
                 try writer.writeAll("[");
-                try RegisterContent.format(at.*, "", options, writer);
+                try RegisterContent.format(at.ptr.*, "", options, writer);
+                try writer.print(":{d}", .{ @as(u7, at.size) * 8 });
                 try writer.writeAll("]");
             },
             .Addition => |add| {
                 try RegisterContent.format(add.lhs.*, "", options, writer);
                 try writer.writeAll(" + ");
                 try RegisterContent.format(add.rhs.*, "", options, writer);
+            },
+            .Or => |bor| {
+                try RegisterContent.format(bor.lhs.*, "", options, writer);
+                try writer.writeAll(" | ");
+                try RegisterContent.format(bor.rhs.*, "", options, writer);
             }
         }
     }
@@ -251,13 +284,17 @@ pub fn decompile(child_allocator: Allocator, original_start: u64, vm: *const Vir
     var arena = std.heap.ArenaAllocator.init(child_allocator);
     const allocator = &arena.allocator;
 
-    const stdout = std.io.getStdOut().writer();
+    // const stdout = std.io.getStdOut().writer();
     var registers: [32]RegisterContent = [1]RegisterContent { .Undefined } ** 32;
     {
-        var i: usize = 0;
+        var i: u5 = 0;
         while (i < 7) : (i += 1) {
-            registers[i] = .{ .Argument = @intCast(u5, i) };
+            registers[i] = .{ .Argument = i };
         }
+        while (i < 31) : (i += 1) {
+            registers[i] = .{ .Register = i };
+        }
+        registers[31] = .{ .Register = 31 };
     }
 
     var i: usize = 0;
@@ -275,25 +312,46 @@ pub fn decompile(child_allocator: Allocator, original_start: u64, vm: *const Vir
                 registers[Rd] = .{ .Value = target };
                 // std.debug.print("x{d} <- 0x{x}\n", .{ Rd, target });
             },
+            .@"ADD X" => {
+                const Rd = disassembler.getField(instructionTag, opcode, 0);
+                const Rm = disassembler.getField(instructionTag, opcode, 1);
+                const Rn = disassembler.getField(instructionTag, opcode, 2);
+                registers[Rd] = try RegisterContent.add(allocator, registers[Rm], registers[Rn]);
+                std.debug.print("x{d} <- x{d} + x{d} = {}\n", .{ Rd, Rm, Rn, registers[Rd] });
+            },
+            .@"ORR X" => {
+                const Rd = disassembler.getField(instructionTag, opcode, 0);
+                const Rn = disassembler.getField(instructionTag, opcode, 1);
+                const Rm = disassembler.getField(instructionTag, opcode, 2);
+                const shift = disassembler.getField(instructionTag, opcode, 3);
+                if (shift != 0) {
+                    std.log.warn("ORR X: non-zero shift not yet supported!", .{});
+                }
+                registers[Rd] = try RegisterContent.binaryOr(allocator, registers[Rn], registers[Rm]);
+                std.debug.print("x{d} = {}\n", .{ Rd, registers[Rd] });
+            },
             .@"LDRSW imm" => {
                 const Rn = disassembler.getField(instructionTag, opcode, 0);
                 const Rt = disassembler.getField(instructionTag, opcode, 1);
                 const imm = disassembler.getField(instructionTag, opcode, 2) << 2;
 
                 const sourceAddr = try RegisterContent.add(allocator, registers[Rn], .{ .Value = imm });
-                // TODO: handle data type size
-                registers[Rt] = try sourceAddr.deref(allocator, vm);
+                // TODO: handle signedness
+                registers[Rt] = try sourceAddr.deref(allocator, vm, 2);
                 std.debug.print("x{d} <- {}\n", .{ Rt, registers[Rt] });
             },
+            // LDR immediate with unsigned offset
             .@"LDR Ximm" => {
                 const Rn = disassembler.getField(instructionTag, opcode, 0);
                 const Rt = disassembler.getField(instructionTag, opcode, 1);
                 const size = @truncate(u2, (opcode >> 30));
                 const imm = disassembler.getField(instructionTag, opcode, 2) << size;
+                if (size != 0b11) {
+                    std.log.warn("LDR Ximm: size 0b{b} not supported!", .{ size });
+                }
 
                 const sourceAddr = try RegisterContent.add(allocator, registers[Rn], .{ .Value = imm });
-                // TODO: handle data type size
-                registers[Rt] = try sourceAddr.deref(allocator, vm);
+                registers[Rt] = try sourceAddr.deref(allocator, vm, 8);
                 std.debug.print("x{d} <- {}\n", .{ Rt, registers[Rt] });
             },
             .@"LDR Xoff" => {
@@ -302,7 +360,17 @@ pub fn decompile(child_allocator: Allocator, original_start: u64, vm: *const Vir
                 const Rn = disassembler.getField(instructionTag, opcode, 2);
 
                 registers[Rt] = try RegisterContent.deref(
-                    try RegisterContent.add(allocator, registers[Rm], registers[Rn]), allocator, vm);
+                    try RegisterContent.add(allocator, registers[Rm], registers[Rn]), allocator, vm, 8);
+
+                std.debug.print("x{d} <- {}\n", .{ Rt, registers[Rt] });
+            },
+            .@"LDR W" => {
+                const Rt = disassembler.getField(instructionTag, opcode, 0);
+                const imm = @bitCast(i21, @intCast(u21, disassembler.getField(instructionTag, opcode, 1) << 2));
+                const target = @bitCast(u64, @intCast(i64, addr) + imm);
+                
+                registers[Rt] = try RegisterContent.deref(
+                    RegisterContent { .Value = target }, allocator, vm, 4);
 
                 std.debug.print("x{d} <- {}\n", .{ Rt, registers[Rt] });
             },
@@ -317,8 +385,17 @@ pub fn decompile(child_allocator: Allocator, original_start: u64, vm: *const Vir
             },
             .@"BR " => {
                 const Rn = disassembler.getField(instructionTag, opcode, 0);
-                std.debug.print("goto {}\n", .{ registers[Rn] });
-                break;
+                std.debug.print("goto x{d} ({})\n", .{ Rn, registers[Rn] });
+                registers[Rn] = registers[Rn].simplify(vm);
+                if (registers[Rn] == .Value) {
+                    opcodes = @ptrCast([*]const u32, @alignCast(@alignOf(u32), try vm.getPtr(registers[Rn].Value)));
+                    start = registers[Rn].Value - 4;
+                    i = 0;
+                    std.debug.print("jumped, continued to 0x{x}\n", .{ registers[Rn].Value });
+                } else {
+                    std.log.info("Cannot determine the address to jump to", .{});
+                    break;
+                }
             },
             .@"RET " => {
                 std.debug.print("return x0\n", .{ });
@@ -328,9 +405,10 @@ pub fn decompile(child_allocator: Allocator, original_start: u64, vm: *const Vir
                 std.debug.print("Incorrect instruction at 0x{x}\n", .{ addr });
                 break;
             },
-            else => {} // not implemented
+            else => {
+                std.log.err("Unimplemented instruction: {}", .{ instructionTag });
+                break;
+            } // not implemented
         }
-        _ = instructionTag;
-        _ = stdout;
     }
 }
