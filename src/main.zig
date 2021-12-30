@@ -121,7 +121,7 @@ pub fn main() !void {
 }
 
 const CommandArgs = []const []const u8;
-fn commandVm(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !void {
+fn commandVm(allocator: Allocator, vm: *VirtualMemory, args: CommandArgs) !void {
     _ = allocator;
     _ = args;
 
@@ -133,7 +133,7 @@ fn commandVm(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !void
     }
 }
 
-fn commandB(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !void {
+fn commandB(allocator: Allocator, vm: *VirtualMemory, args: CommandArgs) !void {
     _ = allocator;
 
     const addr = parseIntSafe(u64, expectArg(
@@ -141,7 +141,7 @@ fn commandB(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !void 
     std.debug.print("{x}: {x}\n", .{addr, try vm.readByte(addr)});
 }
 
-fn commandClassList(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !void {
+fn commandClassList(allocator: Allocator, vm: *VirtualMemory, args: CommandArgs) !void {
     _ = allocator;
     _ = args;
 
@@ -158,7 +158,7 @@ fn commandClassList(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs
         const classAddr = try vm.readIntLittle(listAddr, u64);
         const classRoAddr = try vm.readIntLittle(classAddr + 32, u64);
         const nameAddr = try vm.readIntLittle(classRoAddr + 24, u64);
-        const name = std.mem.spanZ(@ptrCast([*:0]const u8, try vm.getPtr(nameAddr)));
+        const name = std.mem.span(@ptrCast([*:0]const u8, try vm.getPtr(nameAddr)));
         if (lineLength + name.len + 2 > 80) {
             lineLength = 0;
             std.debug.print("\n", .{});
@@ -170,7 +170,7 @@ fn commandClassList(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs
     std.debug.print("\n", .{});
 }
 
-fn commandMon(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !void {
+fn commandMon(allocator: Allocator, vm: *VirtualMemory, args: CommandArgs) !void {
     _ = allocator;
 
     const start = parseIntSafe(u64, expectArg(
@@ -193,7 +193,7 @@ fn commandMon(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !voi
     }
 }
 
-fn commandCode(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !void {
+fn commandCode(allocator: Allocator, vm: *VirtualMemory, args: CommandArgs) !void {
     _ = allocator;
 
     const start = parseIntSafe(u64, expectArg(
@@ -236,7 +236,7 @@ fn commandCode(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !vo
     }
 }
 
-fn commandObjC(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !void {
+fn commandObjC(allocator: Allocator, vm: *VirtualMemory, args: CommandArgs) !void {
     _ = allocator;
     const className = expectArg(args, 0, "Expected class name") orelse return;
     const methodName = expectArg(args, 1, "Expected method name") orelse return;
@@ -283,7 +283,7 @@ fn commandObjC(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !vo
     try objc.decompile(allocator, start, vm, opcodes.items.ptr);
 }
 
-fn commandClass(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !void {
+fn commandClass(allocator: Allocator, vm: *VirtualMemory, args: CommandArgs) !void {
     _ = allocator;
     // See https://opensource.apple.com/source/objc4/objc4-532/runtime/objc-runtime-new.h.auto.html
     const className = expectArg(args, 0, "Expected class name") orelse return;
@@ -298,15 +298,15 @@ fn commandClass(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !v
     const superclass = classInfo.superclass orelse @as([:0]const u8, "NSObject").ptr ;
     std.debug.print("@interface {s} : {s} (0x{x}) {{\n", .{ classInfo.name, superclass, classInfo.superclassId });
     for (classInfo.variables) |variable| {
-        const varType = try objc.decodeTypeName(allocator, std.mem.spanZ(variable.varType));
+        const varType = try objc.decodeTypeName(allocator, std.mem.span(variable.varType));
         defer allocator.free(varType);
         std.debug.print("    {s} {s};\n", .{ varType, variable.name });
     }
     std.debug.print("}}\n", .{});
 
     for (classInfo.methods) |method| {
-        if (classInfo.getVar(std.mem.spanZ(method.name)) != null) {
-            const setterName = try std.mem.concat(allocator, u8, &.{ "set", std.mem.spanZ(method.name), ":" });
+        if (classInfo.getVar(std.mem.span(method.name)) != null) {
+            const setterName = try std.mem.concat(allocator, u8, &.{ "set", std.mem.span(method.name), ":" });
             defer allocator.free(setterName);
             setterName[3] = std.ascii.toUpper(setterName[3]);
             // It is important to know that the exact @property flags are unknown and depend on implementation
@@ -319,7 +319,7 @@ fn commandClass(allocator: *Allocator, vm: *VirtualMemory, args: CommandArgs) !v
                 std.debug.print("// Getter: 0x{x}\n", .{ method.imp });
                 std.debug.print("@property(readonly) {s} {s}; (synthetized)\n\n", .{ method.types, method.name });
             }
-        } else if (!std.mem.startsWith(u8, std.mem.spanZ(method.name), "set")) {
+        } else if (!std.mem.startsWith(u8, std.mem.span(method.name), "set")) {
             std.debug.print("// Implementation: 0x{x}\n", .{method.imp});
             std.debug.print("- (TODO){s} {s}\n\n", .{ method.name, method.types });
         }

@@ -15,7 +15,7 @@ const RelocationTask = struct {
     isectLen: usize
 };
 
-pub fn loadExecutable(allocator: *Allocator, file: std.fs.File) !VirtualMemory {
+pub fn loadExecutable(allocator: Allocator, file: std.fs.File) !VirtualMemory {
     const reader = file.reader();
     const seekable = file.seekableStream();
 
@@ -41,11 +41,12 @@ pub fn loadExecutable(allocator: *Allocator, file: std.fs.File) !VirtualMemory {
 
     var i: usize = 0;
     while (i < header.ncmds) : (i += 1) {
-        const cmd = try reader.readIntLittle(u32);
+        const cmd = try reader.readEnum(std.macho.LC, .Little);
         const size = try reader.readIntLittle(u32);
         try seekable.seekBy(-8);
+        // std.log.scoped(.macho).debug("{}", .{ cmd });
         switch (cmd) {
-            macho.LC_SEGMENT_64 => {
+            .SEGMENT_64 => {
                 const command = try reader.readStruct(macho.segment_command_64);
 
                 var sectionsList = std.ArrayList(vm.Section).init(allocator);
@@ -86,7 +87,7 @@ pub fn loadExecutable(allocator: *Allocator, file: std.fs.File) !VirtualMemory {
                 };
                 try segmentsList.append(segment);
             },
-            macho.LC_SYMTAB => {
+            .SYMTAB => {
                 const command = try reader.readStruct(macho.symtab_command);
                 const pos = try seekable.getPos();
                 var sym: usize = 0;
@@ -114,7 +115,7 @@ pub fn loadExecutable(allocator: *Allocator, file: std.fs.File) !VirtualMemory {
 
                 try seekable.seekTo(pos);
             },
-            macho.LC_DYSYMTAB => {
+            .DYSYMTAB => {
                 const command = try reader.readStruct(macho.dysymtab_command);
                 const pos = try seekable.getPos();
                 std.log.info("{} / {d}", .{ command, symbolList.items.len });
@@ -144,7 +145,7 @@ pub fn loadExecutable(allocator: *Allocator, file: std.fs.File) !VirtualMemory {
 
                 try seekable.seekTo(pos);
             },
-            macho.LC_LOAD_DYLIB => {
+            .LOAD_DYLIB => {
                 const pos = try seekable.getPos();
                 const command = try reader.readStruct(macho.dylib_command);
 

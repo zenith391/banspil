@@ -1,5 +1,5 @@
 const std = @import("std");
-const Allocator = *std.mem.Allocator;
+const Allocator = std.mem.Allocator;
 const VirtualMemory = @import("memory.zig").VirtualMemory;
 const encoding = @import("arm/encoding.zig");
 const disassembler = @import("arm/disassembler.zig");
@@ -15,7 +15,7 @@ pub const ClassInfo = struct {
 
     pub fn getMethod(self: *const ClassInfo, name: []const u8) ?Method {
         for (self.methods) |method| {
-            const methodName = std.mem.spanZ(method.name);
+            const methodName = std.mem.span(method.name);
             if (std.mem.eql(u8, methodName, name)) return method;
         }
         return null;
@@ -25,7 +25,7 @@ pub const ClassInfo = struct {
     /// from name search.
     pub fn getVar(self: *const ClassInfo, name: []const u8) ?Var {
         for (self.variables) |variable| {
-            const varName = std.mem.spanZ(variable.name);
+            const varName = std.mem.span(variable.name);
             if (std.mem.eql(u8, varName[1..], name)) return variable;
         }
         return null;
@@ -43,7 +43,7 @@ pub const ClassInfo = struct {
             const classAddr = try vm.readIntLittle(listAddr, u64);
             const classRoAddr = try vm.readIntLittle(classAddr + 32, u64);
             const nameAddr = try vm.readIntLittle(classRoAddr + 24, u64);
-            const className = std.mem.spanZ(@ptrCast([*:0]const u8, try vm.getPtr(nameAddr)));
+            const className = std.mem.span(@ptrCast([*:0]const u8, try vm.getPtr(nameAddr)));
             if (std.mem.eql(u8, className, name)) {
                 return try readClassInfo(allocator, vm, classAddr);
             }
@@ -282,7 +282,7 @@ const RegisterContent = union(enum) {
 
 pub fn decompile(child_allocator: Allocator, original_start: u64, vm: *const VirtualMemory, org_opcodes: [*]const u32) !void {
     var arena = std.heap.ArenaAllocator.init(child_allocator);
-    const allocator = &arena.allocator;
+    const allocator = arena.allocator();
 
     // const stdout = std.io.getStdOut().writer();
     var registers: [32]RegisterContent = [1]RegisterContent { .Undefined } ** 32;
