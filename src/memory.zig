@@ -79,6 +79,10 @@ pub const VirtualMemory = struct {
         return null;
     }
 
+    pub fn getSymbolAt(self: *const VirtualMemory, addr: u64) ?Symbol {
+        return self.symbols.get(addr);
+    }
+
     /// Fill the slice from content of the virtual memory, starting from addr.
     pub fn readSlice(self: *const VirtualMemory, addr: u64, slice: []u8) !void {
         var i: usize = 0;

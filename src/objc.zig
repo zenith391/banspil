@@ -193,7 +193,8 @@ const RegisterContent = union(enum) {
     ValueAt: struct {
         ptr: *RegisterContent,
         /// Load size in bytes
-        size: u4
+        size: u4,
+        vm: *const VirtualMemory
     },
     Addition: struct { lhs: *RegisterContent, rhs: *RegisterContent },
     Or: struct { lhs: *RegisterContent, rhs: *RegisterContent },
@@ -219,7 +220,7 @@ const RegisterContent = union(enum) {
     pub fn deref(self: RegisterContent, allocator: Allocator, vm: *const VirtualMemory, size: u4) !RegisterContent {
         const at = try allocator.create(RegisterContent);
         at.* = self;
-        return (RegisterContent { .ValueAt = .{ .ptr = at, .size = size }}).simplify(vm);
+        return (RegisterContent { .ValueAt = .{ .ptr = at, .size = size, .vm = vm }}).simplify(vm);
     }
 
     pub fn simplify(self: RegisterContent, vm: ?*const VirtualMemory) RegisterContent {
@@ -277,6 +278,14 @@ const RegisterContent = union(enum) {
                 try RegisterContent.format(at.ptr.*, "", options, writer);
                 try writer.writeAll("]");
                 try writer.print(":{d}", .{ @as(u7, at.size) * 8 });
+                switch (at.ptr.*) {
+                    .Value => |addr| {
+                        if (at.vm.getSymbolAt(addr)) |symbol| {
+                            try writer.print(" ({s})", .{ symbol.name });
+                        }
+                    },
+                    else => {}
+                }
             },
             .Addition => |add| {
                 try RegisterContent.format(add.lhs.*, "", options, writer);

@@ -177,6 +177,7 @@ fn commandClassList(_: Allocator, vm: *VirtualMemory, _: CommandArgs) !void {
 
 fn commandSymbols(_: Allocator, vm: *VirtualMemory, _: CommandArgs) !void {
     var iterator = vm.symbols.iterator();
+    // TODO: sort symbols before printing them
     while (iterator.next()) |entry| {
         std.debug.print("0x{x}: {s}\n", .{ entry.key_ptr.*, entry.value_ptr.*.name });
     }
