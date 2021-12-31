@@ -12,24 +12,7 @@ pub const ClassInfo = struct {
     class_ro_t: u64,
     methods: []const Method,
     variables: []const Var,
-
-    pub fn getMethod(self: *const ClassInfo, name: []const u8) ?Method {
-        for (self.methods) |method| {
-            const methodName = std.mem.span(method.name);
-            if (std.mem.eql(u8, methodName, name)) return method;
-        }
-        return null;
-    }
-
-    /// Get the variable with the given name, note that the starting '_' is automatically stripped
-    /// from name search.
-    pub fn getVar(self: *const ClassInfo, name: []const u8) ?Var {
-        for (self.variables) |variable| {
-            const varName = std.mem.span(variable.name);
-            if (std.mem.eql(u8, varName[1..], name)) return variable;
-        }
-        return null;
-    }
+    allocator: Allocator,
 
     pub fn getClassByName(allocator: Allocator, vm: *const VirtualMemory, name: []const u8) !?ClassInfo {
         const classListSection = vm.getSection("__objc_classlist") orelse {
@@ -50,6 +33,29 @@ pub const ClassInfo = struct {
             i += 1;
         }
         return null;
+    }
+
+    pub fn getMethod(self: *const ClassInfo, name: []const u8) ?Method {
+        for (self.methods) |method| {
+            const methodName = std.mem.span(method.name);
+            if (std.mem.eql(u8, methodName, name)) return method;
+        }
+        return null;
+    }
+
+    /// Get the variable with the given name, note that the starting '_' is automatically stripped
+    /// from name search.
+    pub fn getVar(self: *const ClassInfo, name: []const u8) ?Var {
+        for (self.variables) |variable| {
+            const varName = std.mem.span(variable.name);
+            if (std.mem.eql(u8, varName[1..], name)) return variable;
+        }
+        return null;
+    }
+
+    pub fn deinit(self: *const ClassInfo) void {
+        self.allocator.free(self.variables);
+        self.allocator.free(self.methods);
     }
 };
 
@@ -124,6 +130,7 @@ pub fn readClassInfo(allocator: Allocator, vm: *const VirtualMemory, addr: u64) 
         .superclassId = if (superclassAddr == 0x0) null else superclassAddr,
         .class_t = addr,
         .class_ro_t = classRoAddr,
+        .allocator = allocator,
         .methods = methods.toOwnedSlice(),
         .variables = variables.toOwnedSlice()
     };
@@ -263,8 +270,8 @@ const RegisterContent = union(enum) {
                 // TODO: make it correspond to ivar if it is one
                 try writer.writeAll("[");
                 try RegisterContent.format(at.ptr.*, "", options, writer);
-                try writer.print(":{d}", .{ @as(u7, at.size) * 8 });
                 try writer.writeAll("]");
+                try writer.print(":{d}", .{ @as(u7, at.size) * 8 });
             },
             .Addition => |add| {
                 try RegisterContent.format(add.lhs.*, "", options, writer);
@@ -282,6 +289,7 @@ const RegisterContent = union(enum) {
 
 pub fn decompile(child_allocator: Allocator, original_start: u64, vm: *const VirtualMemory, org_opcodes: [*]const u32) !void {
     var arena = std.heap.ArenaAllocator.init(child_allocator);
+    defer arena.deinit();
     const allocator = arena.allocator();
 
     // const stdout = std.io.getStdOut().writer();

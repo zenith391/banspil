@@ -42,7 +42,9 @@ fn expectArg(args: CommandArgs, index: usize, comptime msg: []const u8) ?[]const
 }
 
 pub fn main() !void {
-    const allocator = std.heap.page_allocator;
+    var gpa = std.heap.GeneralPurposeAllocator(.{}) {};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
 
     const processArgs = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, processArgs);
@@ -58,7 +60,14 @@ pub fn main() !void {
     };
     defer file.close();
 
-    var vm = try @import("macho.zig").loadExecutable(allocator, file);
+    var vm = @import("macho.zig").loadExecutable(allocator, file) catch |err| {
+        std.debug.print("Could not load the executable '{s}': {s}\n", .{ processArgs[1], @errorName(err) });
+        if (@errorReturnTrace()) |trace| {
+            std.debug.dumpStackTrace(trace.*);
+        }
+        return;
+    };
+    defer vm.deinit();
 
     const stdin = std.io.getStdIn().reader();
     while (true) {
@@ -107,13 +116,14 @@ pub fn main() !void {
             //     continue;
             // };
         } else if (std.mem.eql(u8, command, "help")) {
-            std.debug.print("- load <path>         Load the given file for analyze\n", .{});
-            std.debug.print("- vm                  Print loaded sections and their address\n", .{});
-            std.debug.print("- b <address>         Print the byte at the given address\n", .{});
-            std.debug.print("- mon <start> [size]  Print a slice of memory\n", .{});
-            std.debug.print("- code <start> [size] Print and disassemble a slice of memory\n", .{});
-            std.debug.print("- class <class id>    Print information about given class\n", .{});
-            std.debug.print("- class-list          List every class present in the loaded executable\n", .{});
+            std.debug.print("- load <path>           Load the given file for analyze\n", .{});
+            std.debug.print("- vm                    Print loaded sections and their address\n", .{});
+            std.debug.print("- b <address>           Print the byte at the given address\n", .{});
+            std.debug.print("- mon <start> [size]    Print a slice of memory\n", .{});
+            std.debug.print("- code <start> [size]   Print and disassemble a slice of memory\n", .{});
+            std.debug.print("- objc <class> <method> Decompile a class's method into Objective-C pseudo-code", .{});
+            std.debug.print("- class <class id>      Print information about given class\n", .{});
+            std.debug.print("- class-list            List every class present in the loaded executable\n", .{});
         } else if (std.mem.eql(u8, command, "exit")) {
             break;
         }
@@ -121,10 +131,7 @@ pub fn main() !void {
 }
 
 const CommandArgs = []const []const u8;
-fn commandVm(allocator: Allocator, vm: *VirtualMemory, args: CommandArgs) !void {
-    _ = allocator;
-    _ = args;
-
+fn commandVm(_: Allocator, vm: *VirtualMemory, _: CommandArgs) !void {
     for (vm.segments) |segment| {
         std.debug.print("{s}: {x} - {x}\n", .{segment.name, segment.start, segment.start + segment.size});
         for (segment.sections) |section| {
@@ -133,18 +140,13 @@ fn commandVm(allocator: Allocator, vm: *VirtualMemory, args: CommandArgs) !void 
     }
 }
 
-fn commandB(allocator: Allocator, vm: *VirtualMemory, args: CommandArgs) !void {
-    _ = allocator;
-
+fn commandB(_: Allocator, vm: *VirtualMemory, args: CommandArgs) !void {
     const addr = parseIntSafe(u64, expectArg(
         args, 0, "Expected address argument") orelse return, 16) orelse return;
     std.debug.print("{x}: {x}\n", .{addr, try vm.readByte(addr)});
 }
 
-fn commandClassList(allocator: Allocator, vm: *VirtualMemory, args: CommandArgs) !void {
-    _ = allocator;
-    _ = args;
-
+fn commandClassList(_: Allocator, vm: *VirtualMemory, _: CommandArgs) !void {
     const classListSection = vm.getSection("__objc_classlist") orelse {
         std.log.err("Cannot read Objective-C classes from executable. Missing section '__objc_classlist'", .{});
         return;
@@ -246,6 +248,7 @@ fn commandObjC(allocator: Allocator, vm: *VirtualMemory, args: CommandArgs) !voi
         std.log.info("You can see what classes the current file contains using the 'class-list' command", .{});
         return;
     };
+    defer class.deinit();
 
     const method = class.getMethod(methodName) orelse {
         std.log.err("Class '{s}' has no method named '{s}'", .{ className, methodName });
@@ -292,6 +295,7 @@ fn commandClass(allocator: Allocator, vm: *VirtualMemory, args: CommandArgs) !vo
         std.log.info("You can see what classes the current file contains using the 'class-list' command", .{});
         return;
     };
+    defer classInfo.deinit();
 
     std.debug.print("// class_t: 0x{x}\n", .{classInfo.class_t});
     std.debug.print("// class_ro_t: 0x{x}\n\n", .{classInfo.class_ro_t});

@@ -18,6 +18,7 @@ pub const Segment = struct {
 };
 
 pub const VirtualMemory = struct {
+    allocator: std.mem.Allocator,
     segments: []const Segment,
 
     const zero: u8 = 0;
@@ -72,6 +73,18 @@ pub const VirtualMemory = struct {
         var array: [(@typeInfo(T).Int.bits + 7) / 8]u8 = undefined;
         try self.readSlice(addr, &array);
         return std.mem.readIntLittle(T, &array);
+    }
+
+    pub fn deinit(self: *VirtualMemory) void {
+        for (self.segments) |segment| {
+            for (segment.sections) |section| {
+                self.allocator.free(section.mem);
+                self.allocator.free(section.name);
+            }
+            self.allocator.free(segment.sections);
+            self.allocator.free(segment.name);
+        }
+        self.allocator.free(self.segments);
     }
 
 

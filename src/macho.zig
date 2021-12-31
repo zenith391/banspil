@@ -35,7 +35,13 @@ pub fn loadExecutable(allocator: Allocator, file: std.fs.File) !VirtualMemory {
 
     var segmentsList = std.ArrayList(vm.Segment).init(allocator);
     var symbolList = std.ArrayList(Symbol).init(allocator);
-    defer symbolList.deinit();
+    defer {
+        for (symbolList.items) |symbol| {
+            allocator.free(symbol.name);
+        }
+        symbolList.deinit();
+    }
+
     var relocTasks = std.ArrayList(RelocationTask).init(allocator);
     defer relocTasks.deinit();
 
@@ -57,7 +63,6 @@ pub fn loadExecutable(allocator: Allocator, file: std.fs.File) !VirtualMemory {
                     // Seek and read the data contained by this section
                     const pos = try seekable.getPos();
                     try seekable.seekTo(section.offset);
-
                     const mem = try allocator.alloc(u8, section.size);
                     try reader.readNoEof(mem);
                     try seekable.seekTo(pos);
@@ -94,11 +99,12 @@ pub fn loadExecutable(allocator: Allocator, file: std.fs.File) !VirtualMemory {
                 while (sym < command.nsyms) : (sym += 1) {
                     try seekable.seekTo(command.symoff + sym * @sizeOf(macho.nlist_64));
                     const nlist = try reader.readStruct(macho.nlist_64);
-                    //std.log.info("{x}", .{nlist.n_desc});
+                    
+                    try seekable.seekTo(command.stroff + nlist.n_strx);
+                    const str = try reader.readUntilDelimiterAlloc(allocator, 0, std.math.maxInt(usize));
+                    try symbolList.append(Symbol { .name = str });
+                    //std.log.info("{x}", .{nlist});
                     if ((nlist.n_type & macho.N_EXT) != 0) {
-                        try seekable.seekTo(command.stroff + nlist.n_strx);
-                        const str = try reader.readUntilDelimiterAlloc(allocator, 0, std.math.maxInt(usize));
-                        _ = str;
                         if ((nlist.n_type & macho.N_EXT) != 0 and (nlist.n_type & macho.N_STAB) == 0) {
                             //std.log.info("str: {s}", .{str});
                             //std.log.info("n_value: {x} -> {x}" ,.{nlist.n_type & macho.N_TYPE, nlist.n_value});
@@ -108,10 +114,11 @@ pub fn loadExecutable(allocator: Allocator, file: std.fs.File) !VirtualMemory {
                                 const address = nlist.n_value;
                                 _ = address; // TODO: add symbol to section
                             }
-                            try symbolList.append(Symbol { .name = str });
+                            //try symbolList.append(Symbol { .name = str });
                         }
                     }
                 }
+                std.log.info("Symbol list length: 0x{x}", .{ symbolList.items.len });
 
                 try seekable.seekTo(pos);
             },
@@ -124,16 +131,16 @@ pub fn loadExecutable(allocator: Allocator, file: std.fs.File) !VirtualMemory {
                     std.log.info("Relocation task on section '{s}', start at {d} for {d} items.", .{ reloc.sectionName, reloc.isectStart, reloc.isectLen });
                     var isym: usize = reloc.isectStart;
                     while (isym < reloc.isectStart + reloc.isectLen) : (isym += 1) {
-                        for (segmentsList.items) |segment| {
-                            for (segment.sections) |*section| {
-                                _ = section;
-                                try seekable.seekTo(command.indirectsymoff + isym * @sizeOf(u32));
-                                const index = try reader.readIntLittle(u32);
-                                if (index != 0x80000000) {
-                                    //std.log.info("{d} / {d}", .{ index, symbolList.items.len });
-                                    //const symbol = symbolList.items[index];
-                                    //_ = symbol;
-                                    //std.log.info("{} = {s}", .{ index, symbol.name });
+                        try seekable.seekTo(command.indirectsymoff + isym * @sizeOf(u32));
+                        const index = try reader.readIntLittle(u32);
+                        if ((index & 0x0FFFFFFF) != 0) {
+                            const symbol = symbolList.items[index];
+                            _ = symbol;
+                            // std.log.info("{} = {} = {s}", .{ isym, index, symbol.name });
+                            for (segmentsList.items) |segment| {
+                                for (segment.sections) |*section| {
+                                    _ = section;
+
                                 }
                             }
                         }
@@ -162,6 +169,7 @@ pub fn loadExecutable(allocator: Allocator, file: std.fs.File) !VirtualMemory {
     }
 
     return VirtualMemory {
+        .allocator = allocator,
         .segments = segmentsList.toOwnedSlice()
     };
 }
