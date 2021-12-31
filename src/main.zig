@@ -102,6 +102,8 @@ pub fn main() !void {
             try commandClass(allocator, &vm, args);
         } else if (std.mem.eql(u8, command, "class-list")) {
             try commandClassList(allocator, &vm, args);
+        } else if (std.mem.eql(u8, command, "symbols")) {
+            try commandSymbols(allocator, &vm, args);
         } else if (std.mem.eql(u8, command, "load")) {
             // const path = args.next() orelse {
             //     std.log.err("Expected path to a Mach-O file.", .{});
@@ -123,7 +125,8 @@ pub fn main() !void {
             std.debug.print("- code <start> [size]   Print and disassemble a slice of memory\n", .{});
             std.debug.print("- objc <class> <method> Decompile a class's method into Objective-C pseudo-code", .{});
             std.debug.print("- class <class id>      Print information about given class\n", .{});
-            std.debug.print("- class-list            List every class present in the loaded executable\n", .{});
+            std.debug.print("- class-list            List every Objective-C class present in the loaded executable\n", .{});
+            std.debug.print("- symbols               List every symbol present in the loaded executable\n", .{});
         } else if (std.mem.eql(u8, command, "exit")) {
             break;
         }
@@ -170,6 +173,13 @@ fn commandClassList(_: Allocator, vm: *VirtualMemory, _: CommandArgs) !void {
         i += 1;
     }
     std.debug.print("\n", .{});
+}
+
+fn commandSymbols(_: Allocator, vm: *VirtualMemory, _: CommandArgs) !void {
+    var iterator = vm.symbols.iterator();
+    while (iterator.next()) |entry| {
+        std.debug.print("0x{x}: {s}\n", .{ entry.key_ptr.*, entry.value_ptr.*.name });
+    }
 }
 
 fn commandMon(allocator: Allocator, vm: *VirtualMemory, args: CommandArgs) !void {

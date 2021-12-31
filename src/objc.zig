@@ -239,7 +239,12 @@ const RegisterContent = union(enum) {
                 switch (at.ptr.*) {
                     .Value => |value| {
                         if (vm != null) {
-                            const isReadOnly = true;
+                            var isReadOnly = true;
+                            if (vm.?.getSectionAt(value)) |section| {
+                                if (std.mem.eql(u8, section.name, "__got")) {
+                                    isReadOnly = false;
+                                }
+                            }
                             if (isReadOnly) {
                                 var val: u64 = 0;
                                 var bytes: u6 = 0;
@@ -318,7 +323,7 @@ pub fn decompile(child_allocator: Allocator, original_start: u64, vm: *const Vir
                 const Rd = disassembler.getField(instructionTag, opcode, 0);
                 const target = disassembler.getAdrpTarget(addr, opcode);
                 registers[Rd] = .{ .Value = target };
-                // std.debug.print("x{d} <- 0x{x}\n", .{ Rd, target });
+                //std.debug.print("x{d} <- 0x{x}\n", .{ Rd, target });
             },
             .@"ADD X" => {
                 const Rd = disassembler.getField(instructionTag, opcode, 0);
@@ -326,6 +331,20 @@ pub fn decompile(child_allocator: Allocator, original_start: u64, vm: *const Vir
                 const Rn = disassembler.getField(instructionTag, opcode, 2);
                 registers[Rd] = try RegisterContent.add(allocator, registers[Rm], registers[Rn]);
                 std.debug.print("x{d} <- x{d} + x{d} = {}\n", .{ Rd, Rm, Rn, registers[Rd] });
+            },
+            .@"ADD Ximm" => {
+                const Rd = disassembler.getField(instructionTag, opcode, 0);
+                const Rn = disassembler.getField(instructionTag, opcode, 1);
+                const imm = disassembler.getField(instructionTag, opcode, 2);
+                registers[Rd] = try RegisterContent.add(allocator, registers[Rn], .{ .Value = imm });
+                std.debug.print("x{d} <- x{d} + {d} = {}\n", .{ Rd, Rn, imm, registers[Rd] });
+            },
+            .@"STP Xpre" => {
+                const Rt = disassembler.getField(instructionTag, opcode, 0);
+                const Rn = disassembler.getField(instructionTag, opcode, 1);
+                const Rt2 = disassembler.getField(instructionTag, opcode, 2);
+                const imm = disassembler.getField(instructionTag, opcode, 3);
+                std.debug.print("[x{d}:128] + {} = (x{d} << 64) | x{d};\n", .{ Rn, imm, Rt, Rt2 });
             },
             .@"ORR X" => {
                 const Rd = disassembler.getField(instructionTag, opcode, 0);

@@ -1,5 +1,9 @@
 const std = @import("std");
 
+pub const Symbol = struct {
+    name: []const u8
+};
+
 pub const Section = struct {
     name: []const u8,
     //symbol: []const Symbol,
@@ -20,6 +24,7 @@ pub const Segment = struct {
 pub const VirtualMemory = struct {
     allocator: std.mem.Allocator,
     segments: []const Segment,
+    symbols: std.AutoHashMap(u64, Symbol),
 
     const zero: u8 = 0;
 
@@ -60,6 +65,20 @@ pub const VirtualMemory = struct {
         return null;
     }
 
+    pub fn getSectionAt(self: *const VirtualMemory, addr: u64) ?Section {
+        for (self.segments) |segment| {
+            if (addr >= segment.start and addr < segment.start + segment.size) {
+                for (segment.sections) |section| {
+                    if (addr >= section.start and addr < section.start + section.size) {
+                        return section;
+                    }
+                }
+                return null;
+            }
+        }
+        return null;
+    }
+
     /// Fill the slice from content of the virtual memory, starting from addr.
     pub fn readSlice(self: *const VirtualMemory, addr: u64, slice: []u8) !void {
         var i: usize = 0;
@@ -85,6 +104,11 @@ pub const VirtualMemory = struct {
             self.allocator.free(segment.name);
         }
         self.allocator.free(self.segments);
+        var iterator = self.symbols.valueIterator();
+        while (iterator.next()) |symbol| {
+            self.allocator.free(symbol.name);
+        }
+        self.symbols.deinit();
     }
 
 

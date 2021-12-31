@@ -12,7 +12,8 @@ const RelocationTask = struct {
     segmentName: []const u8,
     sectionName: []const u8,
     isectStart: usize,
-    isectLen: usize
+    isectLen: usize,
+    addrStart: usize,
 };
 
 pub fn loadExecutable(allocator: Allocator, file: std.fs.File) !VirtualMemory {
@@ -34,10 +35,11 @@ pub fn loadExecutable(allocator: Allocator, file: std.fs.File) !VirtualMemory {
     }
 
     var segmentsList = std.ArrayList(vm.Segment).init(allocator);
-    var symbolList = std.ArrayList(Symbol).init(allocator);
+    var vmSymbolMap = std.AutoHashMap(u64, vm.Symbol).init(allocator);
+    var symbolList = std.ArrayList(vm.Symbol).init(allocator);
     defer {
         for (symbolList.items) |symbol| {
-            allocator.free(symbol.name);
+            if (symbol.name.len != 0) allocator.free(symbol.name);
         }
         symbolList.deinit();
     }
@@ -68,7 +70,7 @@ pub fn loadExecutable(allocator: Allocator, file: std.fs.File) !VirtualMemory {
                     try seekable.seekTo(pos);
 
                     try sectionsList.append(.{
-                        .name = try allocator.dupe(u8, &section.sectname),
+                        .name = try allocator.dupe(u8, std.mem.sliceTo(&section.sectname, 0)),
                         .start = section.addr,
                         .size = section.size,
                         .mem = mem
@@ -79,6 +81,7 @@ pub fn loadExecutable(allocator: Allocator, file: std.fs.File) !VirtualMemory {
                             .sectionName = try allocator.dupe(u8, &section.sectname),
                             .segmentName = try allocator.dupe(u8, &command.segname),
                             .isectStart = section.reserved1,
+                            .addrStart = section.addr,
                             .isectLen = @divExact(section.size, 8)
                         });
                     }
@@ -99,22 +102,17 @@ pub fn loadExecutable(allocator: Allocator, file: std.fs.File) !VirtualMemory {
                 while (sym < command.nsyms) : (sym += 1) {
                     try seekable.seekTo(command.symoff + sym * @sizeOf(macho.nlist_64));
                     const nlist = try reader.readStruct(macho.nlist_64);
-                    
                     try seekable.seekTo(command.stroff + nlist.n_strx);
                     const str = try reader.readUntilDelimiterAlloc(allocator, 0, std.math.maxInt(usize));
-                    try symbolList.append(Symbol { .name = str });
-                    //std.log.info("{x}", .{nlist});
+
+                    try symbolList.append(vm.Symbol { .name = str });
                     if ((nlist.n_type & macho.N_EXT) != 0) {
                         if ((nlist.n_type & macho.N_EXT) != 0 and (nlist.n_type & macho.N_STAB) == 0) {
-                            //std.log.info("str: {s}", .{str});
-                            //std.log.info("n_value: {x} -> {x}" ,.{nlist.n_type & macho.N_TYPE, nlist.n_value});
                             const libraryNo = nlist.n_desc >> 8;
-                            //std.log.info("defined in {x}", .{ libraryNo });
                             if (libraryNo == 0) { // defined in current module
                                 const address = nlist.n_value;
                                 _ = address; // TODO: add symbol to section
                             }
-                            //try symbolList.append(Symbol { .name = str });
                         }
                     }
                 }
@@ -125,25 +123,20 @@ pub fn loadExecutable(allocator: Allocator, file: std.fs.File) !VirtualMemory {
             .DYSYMTAB => {
                 const command = try reader.readStruct(macho.dysymtab_command);
                 const pos = try seekable.getPos();
-                std.log.info("{} / {d}", .{ command, symbolList.items.len });
 
                 for (relocTasks.items) |reloc| {
                     std.log.info("Relocation task on section '{s}', start at {d} for {d} items.", .{ reloc.sectionName, reloc.isectStart, reloc.isectLen });
                     var isym: usize = reloc.isectStart;
+                    var j: usize = 0;
                     while (isym < reloc.isectStart + reloc.isectLen) : (isym += 1) {
                         try seekable.seekTo(command.indirectsymoff + isym * @sizeOf(u32));
                         const index = try reader.readIntLittle(u32);
                         if ((index & 0x0FFFFFFF) != 0) {
                             const symbol = symbolList.items[index];
-                            _ = symbol;
-                            // std.log.info("{} = {} = {s}", .{ isym, index, symbol.name });
-                            for (segmentsList.items) |segment| {
-                                for (segment.sections) |*section| {
-                                    _ = section;
-
-                                }
-                            }
+                            try vmSymbolMap.put(reloc.addrStart + j*8, symbol);
+                            symbolList.items[index].name = @intToPtr([*]const u8, 0x1)[0..0];
                         }
+                        j = j + 1;
                     }
 
                     allocator.free(reloc.segmentName);
@@ -170,6 +163,7 @@ pub fn loadExecutable(allocator: Allocator, file: std.fs.File) !VirtualMemory {
 
     return VirtualMemory {
         .allocator = allocator,
-        .segments = segmentsList.toOwnedSlice()
+        .segments = segmentsList.toOwnedSlice(),
+        .symbols = vmSymbolMap
     };
 }
